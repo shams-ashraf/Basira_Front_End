@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+websockets
+ultralytics
+transformers
+torch
+safetensors
+vosk
+pyttsx3
+numpy
+opencv-python
+pillow
+sqlalchemy
+pydantic
+python-multipart
+deepface
+tf-keras

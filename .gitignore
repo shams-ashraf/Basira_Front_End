@@ -1,0 +1,83 @@
+# Flutter
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+ai_lab/models/
+ai_lab/storage/
+scene/florence_model/
+scene/final_model/
+scene/blip_model/
+
+ai_lab/models/
+ai_lab/storage/
+
+*.bin
+*.safetensors
+# IDE
+.idea/
+.vscode/
+
+# Local cache
+.localappdata/
+
+# Java
+jdk_dir/
+
+# AI Models
+ai_lab/models/
+scene/florence_model/
+
+# Large model files
+*.bin
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
+# Python
+__pycache__/
+*.pyc
+# AI models
+ai_lab/models/
+ai_lab/storage/
+
+scene/blip_model/
+scene/final_model/
+scene/florence_model/
+
+# caches
+.localappdata/
+.tmp/
+.vscode/
+__pycache__/
+
+# large model files
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+
+# Logs
+*.log
+android/replay_pid*.log
+hs_err_pid*.log
+
+# Database
+*.db
+
+# Runtime data
+back/audio/
+back/database/
+back/unknown/
+
+# Temp
+current
+build_log.txt
+
+android/.kotlin/
+back/model/
+*.log
+hs_err_pid*
+replay_pid*

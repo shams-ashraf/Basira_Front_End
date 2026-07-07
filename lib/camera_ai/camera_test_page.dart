@@ -6,6 +6,10 @@ import 'detection_result.dart';
 import 'camera_service.dart';
 import 'detection_api_service.dart';
 import 'control_button.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../services/backend_service.dart';
+import '../services/localized_speech_text.dart';
+import '../services/voice_service.dart';
 
 class CameraTestPage extends StatefulWidget {
   final String? initialMode;
@@ -39,6 +43,13 @@ class _CameraTestPageState extends State<CameraTestPage> {
   String _detectionErrorMessage = '';
   late TextEditingController _ipController;
 
+  // Alerts & Voice State
+  DateTime? _lastEmergencyAlertAt;
+  DateTime? _lastObstacleAlertAt;
+  final Map<String, DateTime> _dangerCooldown = {};
+  String _language = 'en';
+  String _lastSpeech = '';
+
   @override
   void initState() {
     super.initState();
@@ -67,7 +78,18 @@ class _CameraTestPageState extends State<CameraTestPage> {
 
     _ipController = TextEditingController();
     _initIp();
+    _initPrefs();
     _checkBackendHealth();
+  }
+
+  Future<void> _initPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) {
+      setState(() {
+        _language = prefs.getString('language') ??
+            (prefs.getString('voice_language')?.startsWith('ar') == true ? 'ar' : 'en');
+      });
+    }
   }
 
   @override
@@ -220,6 +242,88 @@ class _CameraTestPageState extends State<CameraTestPage> {
               _detectionErrorMessage = response.error ?? 'Detection failure';
             }
           });
+
+          if (response.success) {
+            // Check for critical obstacle
+            String topSeverity = '';
+            int? topDist;
+            for (var d in response.detections) {
+              if (d.midasSeverity == 'critical') {
+                topSeverity = 'critical';
+                if (topDist == null || (d.midasDistanceCm ?? 9999) < topDist) {
+                  topDist = d.midasDistanceCm;
+                }
+              } else if (d.midasSeverity == 'warning' && topSeverity != 'critical') {
+                topSeverity = 'warning';
+                if (topDist == null || (d.midasDistanceCm ?? 9999) < topDist) {
+                  topDist = d.midasDistanceCm;
+                }
+              }
+            }
+
+            if (topSeverity == 'critical') {
+              final now = DateTime.now();
+              if (_lastObstacleAlertAt == null ||
+                  now.difference(_lastObstacleAlertAt!) >= const Duration(seconds: 8)) {
+                _lastObstacleAlertAt = now;
+                final prefs = await SharedPreferences.getInstance();
+                final childId = prefs.getString('linked_child_id') ??
+                    prefs.getString('child_id') ??
+                    prefs.getString('auth_id') ??
+                    '0';
+                final distStr = topDist != null ? '$topDist cm' : '';
+                final message = _language == 'ar'
+                    ? 'تنبيه! عائق قريب جدًا أمام الطفل${distStr.isNotEmpty ? " على بعد $distStr" : ""}.'
+                    : 'Alert! Very close obstacle detected${distStr.isNotEmpty ? " at $distStr" : ""} in front of child.';
+                unawaited(BackendService.instance.sendChildAlert(
+                  childId: childId,
+                  message: message,
+                  type: 'Obstacle',
+                ));
+              }
+            }
+
+            // Emergency alerts
+            final dangerousObjects = response.detections
+                .where((d) => d.label == 'knife' || d.label == 'scissors')
+                .map((d) => d.label)
+                .toList();
+
+            if (dangerousObjects.isNotEmpty) {
+              final now = DateTime.now();
+              if (_lastEmergencyAlertAt == null ||
+                  now.difference(_lastEmergencyAlertAt!) >= const Duration(seconds: 10)) {
+                final prefs = await SharedPreferences.getInstance();
+                final childId = prefs.getString('linked_child_id') ??
+                    prefs.getString('child_id') ??
+                    prefs.getString('auth_id') ??
+                    '0';
+                for (final obj in dangerousObjects) {
+                  final last = _dangerCooldown[obj];
+                  if (last == null || now.difference(last) >= const Duration(seconds: 15)) {
+                    _dangerCooldown[obj] = now;
+                    _lastEmergencyAlertAt = now;
+                    final arabicLabel = obj == 'knife' ? 'سكين' : 'مقص';
+                    final message = _language == 'ar'
+                        ? 'تنبيه خطر! تم رصد $arabicLabel أمام الطفل.'
+                        : 'Danger alert! $obj detected in front of child.';
+                    unawaited(BackendService.instance.sendChildAlert(
+                      childId: childId,
+                      message: message,
+                      type: 'Emergency',
+                    ));
+                  }
+                }
+              }
+            }
+
+            // Voice
+            final speech = _midasSpeech(response);
+            if (speech.isNotEmpty && speech != _lastSpeech) {
+              _lastSpeech = speech;
+              await VoiceService.instance.speak(speech);
+            }
+          }
         }
       } else if (_runningMode == 'scene') {
         String modelType = 'vit';
@@ -242,6 +346,15 @@ class _CameraTestPageState extends State<CameraTestPage> {
               _detectionErrorMessage = response.error ?? 'Scene summary failure';
             }
           });
+
+          if (response.success) {
+            final speech = response.summary.trim();
+            if (speech.isNotEmpty && speech != _lastSpeech) {
+              _lastSpeech = speech;
+              debugPrint('[CameraTest] 🔊 Scene speech: $speech');
+              await VoiceService.instance.speak(speech);
+            }
+          }
         }
       }
     } else if (imageBytes == null && mounted && _isStreaming) {
@@ -255,6 +368,99 @@ class _CameraTestPageState extends State<CameraTestPage> {
         _isDetecting = false;
       });
     }
+  }
+
+  String _midasSpeech(DetectionResponse response) {
+    String topSeverity = '';
+    int? topDist;
+    String topAlert = response.alert ?? '';
+
+    final objectDetections = response.detections
+        .where((d) => d.label.trim().isNotEmpty && d.label.toLowerCase().trim() != 'person')
+        .toList()
+      ..sort((a, b) => (a.midasDistanceCm ?? 9999).compareTo(b.midasDistanceCm ?? 9999));
+
+    if (objectDetections.isNotEmpty) {
+      final labels = objectDetections
+          .map((d) => _language == 'ar'
+              ? LocalizedSpeechText.objectLabel(d.label, language: 'ar')
+              : d.label)
+          .where((label) => label.trim().isNotEmpty)
+          .toSet()
+          .toList();
+      final joined = _language == 'ar' ? labels.join('، ') : labels.join(', ');
+      final distanceValue = objectDetections.first.midasDistanceCm?.toString() ?? '';
+      if (_language == 'ar') {
+        return distanceValue.isNotEmpty
+            ? 'يوجد $joined أمامك على مسافة $distanceValue سم.'
+            : 'يوجد $joined أمامك.';
+      }
+      return distanceValue.isNotEmpty
+          ? 'I can see $joined in front of you at a distance of $distanceValue cm.'
+          : 'I can see $joined in front of you.';
+    }
+
+    for (var d in response.detections) {
+      if (d.midasSeverity == 'critical') {
+        topSeverity = 'critical';
+        if (topDist == null || (d.midasDistanceCm ?? 9999) < topDist) {
+          topDist = d.midasDistanceCm;
+        }
+      } else if (d.midasSeverity == 'warning' && topSeverity != 'critical') {
+        topSeverity = 'warning';
+        if (topDist == null || (d.midasDistanceCm ?? 9999) < topDist) {
+          topDist = d.midasDistanceCm;
+        }
+      } else if (d.midasSeverity == 'safe' && topSeverity.isEmpty) {
+        topSeverity = 'safe';
+        if (topDist == null || (d.midasDistanceCm ?? 9999) < topDist) {
+          topDist = d.midasDistanceCm;
+        }
+      }
+    }
+
+    final distanceValue = topDist?.toString() ?? '';
+    final hasDistance = distanceValue.isNotEmpty;
+
+    if (topSeverity.isEmpty && topAlert.isNotEmpty) {
+      if (_language == 'ar') {
+        final translated = LocalizedSpeechText.sceneCaption(topAlert, language: 'ar');
+        return translated.isNotEmpty ? translated : topAlert;
+      }
+      return topAlert;
+    }
+    if (topSeverity.isEmpty) return '';
+
+    if (_language == 'ar') {
+      if (topSeverity == 'critical') {
+        return hasDistance
+            ? 'تنبيه خطر، يوجد عائق قريب جداً أمامك على مسافة $distanceValue سم.'
+            : 'تنبيه خطر، يوجد عائق قريب جداً أمامك.';
+      }
+      if (topSeverity == 'warning') {
+        return hasDistance
+            ? 'انتبه، يوجد عائق أمامك على مسافة $distanceValue سم.'
+            : 'انتبه، يوجد عائق أمامك.';
+      }
+      // safe
+      return hasDistance
+          ? 'يوجد عائق بعيد أمامك على مسافة $distanceValue سم.'
+          : 'يوجد عائق بعيد أمامك.';
+    }
+
+    if (topSeverity == 'critical') {
+      return hasDistance
+          ? 'Danger alert. A very close obstacle is ahead. It is at a distance of $distanceValue cm.'
+          : 'Danger alert, very close obstacle ahead.';
+    }
+    if (topSeverity == 'warning') {
+      return hasDistance
+          ? 'Watch out. An obstacle is ahead. It is at a distance of $distanceValue cm.'
+          : 'Watch out, obstacle ahead.';
+    }
+    return hasDistance
+        ? 'Obstacle detected ahead, about $distanceValue cm away.'
+        : 'Obstacle detected ahead.';
   }
 
   String _formatTimestamp(String timestamp) {
@@ -272,6 +478,7 @@ class _CameraTestPageState extends State<CameraTestPage> {
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       appBar: AppBar(
+        automaticallyImplyLeading: true,
         backgroundColor: const Color(0xFF1E1E1E),
         elevation: 0,
         centerTitle: true,

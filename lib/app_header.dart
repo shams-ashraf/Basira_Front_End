@@ -20,6 +20,7 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
       backgroundColor: backgroundColor ?? Colors.transparent,
       elevation: 0,
       centerTitle: true,
+      automaticallyImplyLeading: showBack,
       leading: showBack
           ? IconButton(
               icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black87, size: 20),

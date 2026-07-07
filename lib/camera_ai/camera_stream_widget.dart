@@ -15,7 +15,6 @@ class CameraStreamWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      height: 350,
       decoration: BoxDecoration(
         color: Colors.black87,
         borderRadius: BorderRadius.circular(20),
@@ -30,40 +29,42 @@ class CameraStreamWidget extends StatelessWidget {
       ),
       clipBehavior: Clip.antiAlias,
       child: isStreaming
-          ? Mjpeg(
-              isLive: true,
-              stream: streamUrl,
-              error: (context, error, stack) {
-                return Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
-                      const SizedBox(height: 12),
-                      const Text(
-                        'Connection Error\nCheck network & ESP32',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.redAccent, fontSize: 14),
-                      ),
-                    ],
-                  ),
-                );
-              },
-              loading: (context) {
-                return const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      CircularProgressIndicator(color: Colors.blueAccent),
-                      SizedBox(height: 12),
-                      Text(
-                        'Connecting to stream...',
-                        style: TextStyle(color: Colors.white70),
-                      ),
-                    ],
-                  ),
-                );
-              },
+          ? SizedBox.expand(
+              child: Mjpeg(
+                isLive: true,
+                stream: streamUrl,
+                error: (context, error, stack) {
+                  return const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
+                        SizedBox(height: 12),
+                        Text(
+                          'Connection Error\nCheck network & ESP32',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.redAccent, fontSize: 14),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+                loading: (context) {
+                  return const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        CircularProgressIndicator(color: Colors.blueAccent),
+                        SizedBox(height: 12),
+                        Text(
+                          'Connecting to stream...',
+                          style: TextStyle(color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
             )
           : const Center(
               child: Column(

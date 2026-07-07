@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/auth_service.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -33,6 +34,18 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   Future<void> _checkAuth() async {
     // Keep splash visible for at least 2 seconds for a premium feel
     await Future.delayed(const Duration(seconds: 2));
+    
+    final prefs = await SharedPreferences.getInstance();
+    final userRole = prefs.getString('user_role');
+    final childName = prefs.getString('child_name');
+    
+    if (!mounted) return;
+    
+    if (userRole == 'child' && childName != null && childName.isNotEmpty) {
+      Navigator.pushReplacementNamed(context, '/esp-camera', arguments: {'mode': 'safety'});
+      return;
+    }
+
     final isValid = await AuthService.instance.validateToken();
     
     if (!mounted) return;
@@ -44,13 +57,13 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         if (role == 'parent') {
           Navigator.pushReplacementNamed(context, '/parent');
         } else {
-          Navigator.pushReplacementNamed(context, '/child');
+          Navigator.pushReplacementNamed(context, '/esp-camera', arguments: {'mode': 'safety'});
         }
         return;
       }
     }
     
-    Navigator.pushReplacementNamed(context, '/login');
+    Navigator.pushReplacementNamed(context, '/setup');
   }
 
   @override

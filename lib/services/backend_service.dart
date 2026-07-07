@@ -15,7 +15,6 @@ class BackendService {
   static final BackendService instance = BackendService._();
 
   WebSocketChannel? _channel;
-  WebSocketChannel? _voiceChannel;
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
       FlutterLocalNotificationsPlugin();
 
@@ -82,7 +81,9 @@ class BackendService {
   }
 
   Future<void> connectWebSocket() async {
-    final wsUrl = Uri.parse(AppConfig.websocketUrl);
+    final prefs = await SharedPreferences.getInstance();
+    final wsValue = prefs.getString('websocket_url');
+    final wsUrl = Uri.parse(wsValue ?? AppConfig.baseUrl.replaceFirst('http://', 'ws://').replaceFirst('https://', 'wss://'));
     _channel = WebSocketChannel.connect(wsUrl);
 
     _channel!.stream.listen((message) async {
@@ -132,31 +133,6 @@ class BackendService {
   }
 
   // Voice WebSocket
-  Future<void> connectVoiceWebSocket(
-      Function(Map<String, dynamic>) onMessage) async {
-    final uri = Uri.parse(AppConfig.websocketUrl);
-    _voiceChannel = WebSocketChannel.connect(uri);
-    _voiceChannel!.stream.listen((message) {
-      onMessage(jsonDecode(message));
-    }, onError: (e) {
-      debugPrint("Voice WS Error: $e");
-      Future.delayed(
-          const Duration(seconds: 3), () => connectVoiceWebSocket(onMessage));
-    }, onDone: () {
-      debugPrint("Voice WS Done. Reconnecting...");
-      Future.delayed(
-          const Duration(seconds: 3), () => connectVoiceWebSocket(onMessage));
-    });
-  }
-
-  void sendVoiceData(List<int> data) {
-    _voiceChannel?.sink.add(data);
-  }
-
-  void sendVoiceText(String text) {
-    _voiceChannel?.sink.add(text);
-  }
-
   Future<Map<String, dynamic>> detectObjects(String imagePath) async {
     try {
       final request = http.MultipartRequest(
@@ -590,7 +566,6 @@ class BackendService {
   }
 
   void disconnect() {
-    _channel?.sink.close();
-    _voiceChannel?.sink.close();
-  }
+  _channel?.sink.close();
+   }
 }

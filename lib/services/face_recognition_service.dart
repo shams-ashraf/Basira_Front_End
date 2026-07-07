@@ -1,11 +1,11 @@
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
-import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
 import 'package:tflite_flutter/tflite_flutter.dart';
@@ -29,19 +29,27 @@ class FaceRecognitionService {
       p.join(dbPath, 'faces.db'),
       onCreate: (db, version) async {
         await db.execute(
-            'CREATE TABLE persons(id INTEGER PRIMARY KEY, name TEXT, embedding TEXT, images TEXT)');
+            'CREATE TABLE persons(id INTEGER PRIMARY KEY, child_id INTEGER, name TEXT, embedding TEXT, images TEXT)');
         await db.execute(
-            'CREATE TABLE unknown_persons(id INTEGER PRIMARY KEY, image_path TEXT, embedding TEXT, timestamp TEXT)');
+            'CREATE TABLE unknown_persons(id INTEGER PRIMARY KEY, child_id INTEGER, image_path TEXT, embedding TEXT, timestamp TEXT)');
       },
       onUpgrade: (db, oldV, newV) async {
         if (oldV < 5) {
           await db.execute(
-              'CREATE TABLE IF NOT EXISTS persons(id INTEGER PRIMARY KEY, name TEXT, embedding TEXT, images TEXT)');
+              'CREATE TABLE IF NOT EXISTS persons(id INTEGER PRIMARY KEY, child_id INTEGER, name TEXT, embedding TEXT, images TEXT)');
           await db.execute(
-              'CREATE TABLE IF NOT EXISTS unknown_persons(id INTEGER PRIMARY KEY, image_path TEXT, embedding TEXT, timestamp TEXT)');
+              'CREATE TABLE IF NOT EXISTS unknown_persons(id INTEGER PRIMARY KEY, child_id INTEGER, image_path TEXT, embedding TEXT, timestamp TEXT)');
+        }
+        if (oldV < 6) {
+          try {
+            await db.execute('ALTER TABLE persons ADD COLUMN child_id INTEGER');
+          } catch (_) {}
+          try {
+            await db.execute('ALTER TABLE unknown_persons ADD COLUMN child_id INTEGER');
+          } catch (_) {}
         }
       },
-      version: 5,
+      version: 6,
     );
 
     try {
@@ -67,10 +75,19 @@ class FaceRecognitionService {
     _cachedPersons = await getAllPersons();
   }
 
+  Future<int> _currentChildId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('linked_child_id') ??
+        prefs.getString('child_id') ??
+        prefs.getString('auth_id') ??
+        '0';
+    return int.tryParse(raw) ?? 0;
+  }
+
   // --- RECOGNITION ---
 
   Future<String?> recognize(Float32List embedding) async {
-    double minDistance = 1.0;
+    double bestSimilarity = 0.0;
     String? name;
 
     for (var p in _cachedPersons) {
@@ -89,8 +106,9 @@ class FaceRecognitionService {
           }
           final dist =
               _cosineDistance(embedding, Float32List.fromList(savedEmb));
-          if (dist < 0.35 && dist < minDistance) {
-            minDistance = dist;
+          final similarity = 1.0 - dist;
+          if (similarity >= 0.5 && similarity > bestSimilarity) {
+            bestSimilarity = similarity;
             name = p['name'] as String;
           }
         } catch (e) {
@@ -119,6 +137,7 @@ class FaceRecognitionService {
   Future<void> savePerson(
       String name, List<Map<String, dynamic>> faceData) async {
     final db = await _databaseOrThrow();
+    final childId = await _currentChildId();
     final embeddingStr = faceData.map((e) {
       final emb = e['embedding'];
       if (emb == null) return '';
@@ -132,7 +151,7 @@ class FaceRecognitionService {
     }).join('|');
     final imagesStr = faceData.map((e) => e['image_path'] ?? '').join('|');
     await db.insert('persons',
-        {'name': name, 'embedding': embeddingStr, 'images': imagesStr});
+        {'child_id': childId, 'name': name, 'embedding': embeddingStr, 'images': imagesStr});
     await reloadCache();
   }
 
@@ -220,19 +239,19 @@ class FaceRecognitionService {
   Future<void> addUnknownPerson(dynamic arg1, dynamic arg2,
       [dynamic arg3]) async {
     final db = await _databaseOrThrow();
-    // arg1: imagePath/filename, arg2: embedding/imageUrl, arg3: timestamp
     String imagePath = arg1.toString();
     String embeddingStr = "";
     String timestamp = arg3?.toString() ?? DateTime.now().toIso8601String();
+    final childId = await _currentChildId();
 
     if (arg2 is Float32List) {
       embeddingStr = arg2.join(',');
     } else {
-      // It's likely the imageUrl from backend
       imagePath = arg2.toString();
     }
 
     await db.insert('unknown_persons', {
+      'child_id': childId,
       'image_path': imagePath,
       'embedding': embeddingStr,
       'timestamp': timestamp,
@@ -244,9 +263,17 @@ class FaceRecognitionService {
     await db.delete('unknown_persons', where: 'id = ?', whereArgs: [id]);
   }
 
-  Future<List<Map<String, dynamic>>> getUnknownPersons() async {
+  Future<List<Map<String, dynamic>>> getUnknownPersons({int? childId}) async {
     final db = await _databaseOrThrow();
-    return db.query('unknown_persons', orderBy: 'timestamp DESC');
+    if (childId == null) {
+      return db.query('unknown_persons', orderBy: 'timestamp DESC');
+    }
+    return db.query(
+      'unknown_persons',
+      where: 'child_id = ?',
+      whereArgs: [childId],
+      orderBy: 'timestamp DESC',
+    );
   }
 
   // --- IMAGE PROCESSING ---
@@ -307,45 +334,7 @@ class FaceRecognitionService {
     return img.copyCrop(fullImage, x: x, y: y, width: w, height: h);
   }
 
-  Future<img.Image?> detectAndCropFace(CameraImage cameraImage,
-      [InputImageRotation rotation = InputImageRotation.rotation90deg]) async {
-    final WriteBuffer allBytes = WriteBuffer();
-    for (final Plane plane in cameraImage.planes) {
-      allBytes.putUint8List(plane.bytes);
-    }
-    final bytes = allBytes.done().buffer.asUint8List();
 
-    final inputImage = InputImage.fromBytes(
-        bytes: bytes,
-        metadata: InputImageMetadata(
-          size:
-              Size(cameraImage.width.toDouble(), cameraImage.height.toDouble()),
-          rotation: rotation,
-          format: InputImageFormat.yuv420,
-          bytesPerRow: cameraImage.planes[0].bytesPerRow,
-        ));
-
-    final faces = await _faceDetector.processImage(inputImage);
-    if (faces.isEmpty) return null;
-
-    final rect = faces.first.boundingBox;
-    final fullImg = _convertYUV420ToImage(cameraImage);
-
-    // Rotate the image based on the sensor rotation
-    int angle = 0;
-    if (rotation == InputImageRotation.rotation90deg) angle = 90;
-    if (rotation == InputImageRotation.rotation180deg) angle = 180;
-    if (rotation == InputImageRotation.rotation270deg) angle = 270;
-
-    final rotated =
-        angle != 0 ? img.copyRotate(fullImg, angle: angle) : fullImg;
-
-    return img.copyCrop(rotated,
-        x: rect.left.toInt(),
-        y: rect.top.toInt(),
-        width: rect.width.toInt(),
-        height: rect.height.toInt());
-  }
 
   Float32List? getEmbedding(img.Image faceImage) {
     if (_interpreter == null) return null;
@@ -377,29 +366,6 @@ class FaceRecognitionService {
     return 1.0 - (dot / (sqrt(normA) * sqrt(normB)));
   }
 
-  img.Image _convertYUV420ToImage(CameraImage image) {
-    final width = image.width, height = image.height;
-    final out = img.Image(width: width, height: height);
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        final yVal = image.planes[0].bytes[y * image.planes[0].bytesPerRow + x];
-        final uvIndex = (y ~/ 2) * image.planes[1].bytesPerRow +
-            (x ~/ 2) * image.planes[1].bytesPerPixel!;
-        final uVal = image.planes[1].bytes[uvIndex],
-            vVal = image.planes[2].bytes[uvIndex];
-        out.setPixelRgba(
-            x,
-            y,
-            (yVal + 1.402 * (vVal - 128)).toInt().clamp(0, 255),
-            (yVal - 0.344136 * (uVal - 128) - 0.714136 * (vVal - 128))
-                .toInt()
-                .clamp(0, 255),
-            (yVal + 1.772 * (uVal - 128)).toInt().clamp(0, 255),
-            255);
-      }
-    }
-    return out;
-  }
 
   void dispose() {
     _faceDetector.close();

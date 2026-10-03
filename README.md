@@ -431,24 +431,3 @@ flutter doctor
 Fix all reported issues.
 
 ---
-
-# Authors
-
-Graduation Project
-
-Faculty of Computers and Artificial Intelligence
-
-Helwan National University
-
-Academic Year 2025–2026
-
-Developed by
-
-- Shams Ashraf
-- Basira AI Team
-
----
-
-# License
-
-This repository is intended for educational and graduation project purposes only.
